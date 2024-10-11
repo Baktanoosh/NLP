@@ -1,0 +1,4 @@
+C:/Users/bakta/AppData/Local/Programs/Python/Python38/python.exe c:/Users/bakta/OneDrive/Desktop/NLP/Week8/Project5/letter_counting.py --task BEFOREAFTER
+
+C:/Users/bakta/AppData/Local/Programs/Python/Python38/python.exe c:/Users/bakta/OneDrive/Desktop/NLP/Week8/Project5/sem_parsing.py --eval_from_checkpoint --decode_type ORACLE
+C:/Users/bakta/AppData/Local/Programs/Python/Python38/python.exe c:/Users/bakta/OneDrive/Desktop/NLP/Week8/Project5/sem_parsing.py --eval_from_checkpoint --decode_type FANCY

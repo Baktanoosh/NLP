@@ -1,0 +1,24 @@
+  for i in range(len(contex)):
+        if i < cons_size:
+            label = 0
+        else:
+            label = 1
+        label = torch.FloatTensor([[label]]) 
+    for _, train_ex in enumerate(contex):    
+        train_ex = model_rnn.char_embedding(train_ex)
+        train_data.append((train_ex, label))
+    optimizer = torch.optim.Adam(model_rnn.parameters(), lr=initial_learning_rate)
+    loss = nn.NLLLoss()
+    for epoch in range(0, num_epochs):
+        random.shuffle(train_data)
+        contex_ind = [vocab_index.index_of(char) for char in contex]
+        for ex, label in train_data:
+            ex_tensor = torch.from_numpy(np.array(ex)).long()
+            log_probs = model_rnn.forward(ex_tensor)
+            loss_val = loss(log_probs, label)
+            optimizer.zero_grad()
+            loss_val.backward()
+            optimizer.step()
+    now = time.time()
+    print("Total Traing time", now-start)
+    return model_rnn

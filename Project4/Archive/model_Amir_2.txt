@@ -1,0 +1,33 @@
+def decode_fancy(model, indexer, exs, num_exs):
+    start = time.time()
+    all_example_preds = []
+    num_exs_to_use = min(num_exs, len(exs)) if num_exs > 0 else len(exs)
+    num_const = 0
+    exact_match = 0
+    labels = []
+    for i in range(0, num_exs_to_use):
+        beam_size = 10
+        score_list = []
+        ex_length = sum(exs[i]['attention_mask'])
+        dev_input_tensor = torch.tensor([exs[i]['input_ids'][0:ex_length]], dtype=torch.long)
+        output_ids = model.generate(dev_input_tensor, num_beams=beam_size , max_length=65, early_stopping=True, num_return_sequences=beam_size)
+        input_const = []
+        input_words = [indexer.get_object(id) for id in exs[i]['input_ids']]
+        for word in input_words:
+            if word in const_list:
+                input_const.append(word)
+        best_score = 0
+        best_option = pred_indices_to_prediction(output_ids.data[0][1:], indexer)
+        for k in range(0, beam_size):
+            one_best = pred_indices_to_prediction(output_ids.data[k][1:], indexer)
+            count = 0
+            for l in range(len(one_best)):
+                if one_best[l] in input_const:
+                    count += 1
+            if count > best_score:
+                best_score = count
+                best_option = one_best
+        all_example_preds.append(one_best)
+    now = time.time()
+    print("Total Traing time", now-start)
+    return all_example_preds

@@ -1,0 +1,342 @@
+# models.py
+
+import numpy as np
+import collections
+import torch
+import torch.nn as nn
+from torch import optim
+import random
+from torch.utils.data import DataLoader
+import time
+
+#####################
+# MODELS FOR PART 1 #
+#####################
+
+class ConsonantVowelClassifier(object):
+    def predict(self, context):
+        """
+        :param context:
+        :return: 1 if vowel, 0 if consonant
+        """
+        raise Exception("Only implemented in subclasses")
+
+
+class FrequencyBasedClassifier(ConsonantVowelClassifier):
+    """
+    Classifier based on the last letter before the space. If it has occurred with more consonants than vowels,
+    classify as consonant, otherwise as vowel.
+    """
+    def __init__(self, consonant_counts, vowel_counts):
+        self.consonant_counts = consonant_counts
+        self.vowel_counts = vowel_counts
+
+    def predict(self, context):
+        # Look two back to find the letter before the space
+        if self.consonant_counts[context[-1]] > self.vowel_counts[context[-1]]:
+            return 0
+        else:
+            return 1
+
+
+class RNNClassifier(ConsonantVowelClassifier, nn.Module):
+    def __init__(self, dict_size, input_size, hidden_size, output_size, vocab_index, dropout, rnn_type):
+        """
+        Constructs the computation graph by instantiating the various layers and initializing weights.
+
+        :param inp: size of input (integer)
+        :param hid: size of hidden layer(integer)
+        :param out: size of output (integer), which should be the number of classes
+        """
+        super(RNNClassifier, self).__init__()
+        self.hidden_size = hidden_size
+        self.word_embedding = nn.Embedding(dict_size, input_size)
+        self.log_softmax = nn.LogSoftmax(dim = 0)
+        self.rnn_type = rnn_type
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers = 1, dropout = dropout)
+        # Initialize weights according to a formula due to Xavier Glorot.
+        nn.init.xavier_uniform_(self.rnn.weight_hh_l0)
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0)
+        #nn.init.xavier_uniform_(self.rnn.bias_hh_l0)
+        #nn.init.xavier_uniform_(self.rnn.bias_ih_l0)
+        self.linear = torch.nn.Linear(hidden_size, output_size)           # torch.nn.Linear(in_features, out_features)
+        self.vocab_index = vocab_index
+
+    def forward(self, x):
+        """
+        Runs the neural network on the given data and returns log probabilities of the various classes.
+
+        :param x: a [inp]-sized tensor of input data
+        :return: an [out]-sized tensor of log probabilities. (In general your network can be set up to return either log
+        probabilities or a tuple of (loss, log probability) if you want to pass in y to this function as well
+        """
+        embedded_input = self.word_embedding(x)
+        # RNN expects a batch
+        embedded_input = embedded_input.unsqueeze(1)
+        # The hidden state and cell state are 1x1xdim tensor: num layers * num directions x batch_size x dimensionality
+        init_state = (torch.from_numpy(np.zeros(self.hidden_size)).unsqueeze(0).unsqueeze(1).float(),
+                      torch.from_numpy(np.zeros(self.hidden_size)).unsqueeze(0).unsqueeze(1).float())
+        output, (hidden_state, cell_state) = self.rnn(embedded_input, init_state)
+        # Note: hidden_state is a 1x1xdim tensor: num layers * num directions x batch_size x dimensionality
+        hidden_state = self.linear(hidden_state.squeeze(0))
+        #return output, hidden_state, cell_state
+        return self.log_softmax(hidden_state.squeeze(0))
+
+
+    def predict(self, context):
+        """
+        Makes a prediction on the given sentence
+        :param context: sentence to predict on
+        :return: 0 (consonent) or 1 (vowel) with the label
+        """
+        context_indices = [self.vocab_index.index_of(char) for char in context]
+        x = torch.from_numpy(np.array(context_indices)).long()    # input array of indices
+        log_probs = self.forward(x)       # applying forward neural network to get probability of labels
+        return torch.argmax(log_probs).item()       # returning maximum of the two labels as the prediction for the input
+
+
+def train_frequency_based_classifier(cons_exs, vowel_exs):
+    consonant_counts = collections.Counter()
+    vowel_counts = collections.Counter()
+    for ex in cons_exs:
+        consonant_counts[ex[-1]] += 1
+    for ex in vowel_exs:
+        vowel_counts[ex[-1]] += 1
+    return FrequencyBasedClassifier(consonant_counts, vowel_counts)
+
+
+def train_rnn_classifier(args, train_cons_exs, train_vowel_exs, dev_cons_exs, dev_vowel_exs, vocab_index):
+    """
+    :param args: command-line args, passed through here for your convenience
+    :param train_cons_exs: list of strings followed by consonants
+    :param train_vowel_exs: list of strings followed by vowels
+    :param dev_cons_exs: list of strings followed by consonants
+    :param dev_vowel_exs: list of strings followed by vowels
+    :param vocab_index: an Indexer of the character vocabulary (27 characters)
+    :return: an RNNClassifier instance trained on the given data
+    """
+    begin = time.time()
+    print("________________________________________________________________________________")
+    # hyperparameters   
+    dict_size = len(vocab_index)
+    batch_size = 5
+    input_size = 30
+    hidden_size = 50          # size of the hidden layer (z)
+    output_size = 2         # size of y; # of classes
+    total_epoch = 5
+    lr = 0.001
+    dropout = 0.        # only if there are more than 1 layer
+    # Preparing the data for training
+    train_exs = []
+    for ex in train_cons_exs:
+        ex_indices = [vocab_index.index_of(char) for char in ex]
+        train_exs.append((ex_indices, 0))
+    for ex in train_vowel_exs:
+        ex_indices = [vocab_index.index_of(char) for char in ex]
+        train_exs.append((ex_indices, 1))
+    #dataset = DataLoader(train_exs, batch_size, shuffle=False)
+    #for index, y in enumerate(dataset):
+    #    print(y[0][0], y[1][0])
+    #    exit()    
+    # Running the training using RNN 
+    RNN = RNNClassifier(dict_size, input_size, hidden_size, output_size, vocab_index, dropout, rnn_type='lstm')
+    nllloss = torch.nn.NLLLoss()
+    CEloss = torch.nn.CrossEntropyLoss()
+    optimizer = optim.Adam(RNN.parameters(), lr=lr)
+    for epoch in range(0, total_epoch):
+        random.seed(epoch + 1)
+        random.shuffle(train_exs)      # shuffling the examples for each epoch
+        total_loss = 0.0
+        for idx in range(len(train_exs)):
+            train_ex, label = train_exs[idx] 
+            x = torch.from_numpy(np.array(train_ex)).long()    # input array of indices
+            # Build one-hot representation of y
+            y_onehot = torch.zeros(output_size)
+            y_onehot.scatter_(0, torch.from_numpy(np.asarray(label,dtype=np.int64)), 1)
+            RNN.zero_grad()
+            log_probs = RNN.forward(x)
+            loss = torch.neg(log_probs).dot(y_onehot) 
+            ## NLLLoss calculation
+            #target = y_onehot.to(torch.int64)
+            #target = torch.tensor([target[1],target[0]])      
+            #target = torch.FloatTensor([label]).long()
+            #loss = nllloss(log_probs, target)
+            #loss = CEloss(log_probs, target)
+            total_loss += loss
+            # Computes the gradient and takes the optimizer step
+            loss.backward()
+            optimizer.step()
+        print("Total loss on epoch %i: %f" % (epoch, total_loss))
+    end = time.time()
+    print(f"Total runtime of the program is {end - begin}")
+    return RNN
+
+
+#####################
+# MODELS FOR PART 2 #
+#####################
+
+
+class LanguageModel(object):
+
+    def get_next_char_log_probs(self, context) -> np.ndarray:
+        """
+        Returns a log probability distribution over the next characters given a context.
+        The log should be base e
+        :param context: a single character to score
+        :return: A numpy vector log P(y | context) where y ranges over the output vocabulary.
+        """
+        raise Exception("Only implemented in subclasses")
+
+
+    def get_log_prob_sequence(self, next_chars, context) -> float:
+        """
+        Scores a bunch of characters following context. That is, returns
+        log P(nc1, nc2, nc3, ... | context) = log P(nc1 | context) + log P(nc2 | context, nc1), ...
+        The log should be base e
+        :param next_chars:
+        :param context:
+        :return: The float probability
+        """
+        raise Exception("Only implemented in subclasses")
+
+
+class UniformLanguageModel(LanguageModel):
+    def __init__(self, voc_size):
+        self.voc_size = voc_size
+
+    def get_next_char_log_probs(self, context):
+        return np.ones([self.voc_size]) * np.log(1.0/self.voc_size)
+
+    def get_log_prob_sequence(self, next_chars, context):
+        return np.log(1.0/self.voc_size) * len(next_chars)
+
+
+class RNNLanguageModel(LanguageModel, nn.Module):
+    def __init__(self, dict_size, input_size, hidden_size, output_size, vocab_index, dropout, rnn_type):
+        """
+        Constructs the computation graph by instantiating the various layers and initializing weights.
+
+        :param inp: size of input (integer)
+        :param hid: size of hidden layer(integer)
+        :param out: size of output (integer), which should be the number of classes
+        """
+        super(RNNLanguageModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.word_embedding = nn.Embedding(dict_size, input_size)
+        self.log_softmax = nn.LogSoftmax(dim = 0)
+        self.rnn_type = rnn_type
+        self.rnn = nn.LSTM(input_size, hidden_size, num_layers = 1, dropout = dropout)
+        # Initialize weights according to a formula due to Xavier Glorot.
+        nn.init.xavier_uniform_(self.rnn.weight_hh_l0)
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0)
+        #nn.init.xavier_uniform_(self.rnn.bias_hh_l0)
+        #nn.init.xavier_uniform_(self.rnn.bias_ih_l0)
+        self.linear = torch.nn.Linear(hidden_size, output_size)           # torch.nn.Linear(in_features, out_features)
+        self.vocab_index = vocab_index
+
+    def forward(self, x):
+        """
+        Runs the neural network on the given data and returns log probabilities of the various classes.
+
+        :param x: a [inp]-sized tensor of input data
+        :return: an [out]-sized tensor of log probabilities. (In general your network can be set up to return either log
+        probabilities or a tuple of (loss, log probability) if you want to pass in y to this function as well
+        """
+        embedded_input = self.word_embedding(x)
+        # RNN expects a batch
+        embedded_input = embedded_input.unsqueeze(1)
+        # Note: the hidden state and cell state are 1x1xdim tensor: num layers * num directions x batch_size x dimensionality
+        init_state = (torch.from_numpy(np.zeros(self.hidden_size)).unsqueeze(0).unsqueeze(1).float(),
+                      torch.from_numpy(np.zeros(self.hidden_size)).unsqueeze(0).unsqueeze(1).float())
+        output, (hidden_state, cell_state) = self.rnn(embedded_input, init_state)       
+        output = self.linear(output.squeeze(1))     # squeeze(1)
+        return output
+
+    def get_next_char_log_probs(self, context):
+    # Takes a context and returns the log probability distribution over the next characters given that context as a numpy vector
+    # of length equal to the vocabulary size    
+        context_indices = [self.vocab_index.index_of(char) for char in context]
+        x = torch.from_numpy(np.array(context_indices)).long()    # input array of indices
+        log_probs = self.forward(x)       # applying LSTM to get probabilities of next chars
+        return self.log_softmax(log_probs[-1]).detach().numpy() 
+
+    def get_log_prob_sequence(self, next_chars, context):
+    # Takes a whole sequence of characters and a context and returns the log probability of that whole sequence under the model    
+        """
+        self.eval()
+        log_prob = 0.
+        combined = context + next_chars
+        #print("combined", len(combined), combined)
+        context_indices = [self.vocab_index.index_of(char) for char in combined]
+        x = torch.from_numpy(np.array(context_indices)).long()    
+        log_probs =  self.log_softmax(self.forward(x)).detach().numpy()
+        for idx in range(len(next_chars)):
+            log_prob +=  log_probs[len(context)+idx-1, self.vocab_index.index_of(next_chars[idx])].item()     
+        """
+        log_prob = 0.
+        for char in next_chars:
+            char_probs = self.get_next_char_log_probs(context)
+            #print("char_probs", char_probs)
+            log_prob += char_probs[self.vocab_index.index_of(char)]  
+            context += char
+        return log_prob
+
+def train_lm(args, train_text, dev_text, vocab_index):
+    """
+    :param args: command-line args, passed through here for your convenience
+    :param train_text: train text as a sequence of characters
+    :param dev_text: dev texts as a sequence of characters
+    :param vocab_index: an Indexer of the character vocabulary (27 characters)
+    :return: an RNNLanguageModel instance trained on the given data
+    """
+    begin = time.time()
+    print("________________________________________________________________________________")
+    # hyperparameters   
+    dict_size = len(vocab_index)
+    batch_size = 5
+    chunk_size = 10
+    input_size = 30
+    hidden_size = 50          # size of the hidden layer (z)
+    output_size = dict_size         # size of y; # of classes
+    total_epoch = 10
+    portion = 1
+    lr = 0.001
+    dropout = 0.        # only if there are more than 1 layer
+    # Preparing the data for training
+    print("portion: ", portion, "chunk_size: ", chunk_size, "input_size: ", input_size, "hidden_size: ", hidden_size, "total_epoch: ", total_epoch, "lr: ", lr)
+    train_exs = []
+    # forming the training data: add space at the beginning & shift the characters for each example
+    for i in range(0,len(train_text),chunk_size):
+        train_ex = train_text[i:i+chunk_size]
+        if len(train_ex) < chunk_size: break
+        label = train_ex
+        train_ex = " " + train_ex[:len(train_ex)-1]
+        train_exs.append(([vocab_index.index_of(char) for char in train_ex], [vocab_index.index_of(char) for char in label]))
+    #dataset = DataLoader(train_exs, batch_size, shuffle=False)
+    #for index, y in enumerate(dataset):
+    #    print(y[0][0], y[1][0])
+    #    exit()    
+    # Running the training using RNN 
+    RNNLM = RNNLanguageModel(dict_size, input_size, hidden_size, output_size, vocab_index, dropout, rnn_type='lstm')
+    CrossEntloss = torch.nn.CrossEntropyLoss()
+    optimizer = optim.Adam(RNNLM.parameters(), lr=lr)
+    for epoch in range(0, total_epoch):
+        random.seed(epoch + 1)
+        random.shuffle(train_exs)      # shuffling the examples for each epoch
+        total_loss = 0.0
+        for idx in range(len(train_exs)//portion):
+            train_ex, label = train_exs[idx] 
+            x = torch.from_numpy(np.array(train_ex)).long()    # input array of indices
+            RNNLM.zero_grad()
+            log_probs = RNNLM.forward(x)
+            target = torch.LongTensor(label)
+            loss = CrossEntloss(log_probs, target)
+            total_loss += loss
+            # Computes the gradient and takes the optimizer step
+            loss.backward()
+            optimizer.step()
+        print("Total loss on epoch %i: %f" % (epoch, total_loss))
+    end = time.time()
+    print(f"Total runtime of the program is {end - begin}")
+    return RNNLM
